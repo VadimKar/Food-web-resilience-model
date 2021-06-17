@@ -1,6 +1,5 @@
-
-
 #Note: this code intended for reproducibility only; for model and analysis details see original manuscript
+#https://www.biorxiv.org/content/10.1101/2020.11.27.401711v2
 library(deSolve); library(abind);
 
 
@@ -140,6 +139,20 @@ BfnVisSimp=function(FMIdat,RMIdat,trl=3,gamLvl=10,xlm=c(0.05,0.35),Lwd=c(2,3),lt
 	}
 	par(mfcol=c(2,2)); mplot(FMItrans); mplot(RMItrans);
 }
+bumpfind=function(y,x=mSeq,xlag=0,fwd=TRUE,thresh){
+	if(is.na(y[2])) return(NA)
+	theOne=function(x) c(head(x,1),tail(x,1))[1+fwd]
+	d=(1-2*fwd)*diff(y)>thresh;  if(sum(d,na.rm=TRUE)>0) return(x[theOne(which(d)-xlag)]);
+	return(x[which.max((1-2*fwd)*diff(y))-xlag]);
+}
+binsum=function(x,freqs=rep(1,length(x)),breaks=50,rng=rngbin0){
+	if(sum(!is.na(x))==0) return(double(2*length(x)));
+	nzro=freqs>0; if(sum(nzro,na.rm=TRUE)==0) return(double(2*breaks)); if(length(unique(round(x[nzro],4)))==1) return(c(x[nzro][1],double(breaks-1),1,double(breaks-1)));
+	if(!is.null(rng)){ x=c(rng[1],pmin(x,rng[2]),rng[2]); freqs=c(0,freqs,0); }
+	tmp=unlist(lapply(split(freqs,cut(x,breaks,labels=FALSE)),sum));
+	vals=double(breaks); vals[as.numeric(names(tmp))]=tmp/sum(tmp);
+	return(c(min(x,na.rm=TRUE)+diff(range(x,na.rm=TRUE))*(1:breaks)/breaks,vals)); 
+}
 bef2ColsFun=function(dat,TAU){
 	x=dat[,1:10,]; L=dim(x)[1]; mDown=t(apply(x[1:L,,], c(2,3), bumpfind, thresh=TH, x=1:L))
 	maxCol=apply(mDown,1,function(x) which.max(tail(binsum(x,breaks=L,rng=c(0,L)),L))); maxCol[maxCol==1]=round(rowMeans(mDown,na.rm=TRUE))[maxCol==1]; #this will be NA if no hystereses
@@ -180,7 +193,7 @@ parmgen=function(parms0,FMI,NSP=12,Seed=1,extras=c(nCabs=1,Feedvar=0.3,ISvar=0.2
 	return(list(Parms=round(Parms,3),Specials=round(Ss,5),Comps=round(Fs,5),FMI=FMI,Cabs=Cabs))
 }
 parmtest=function(PARMS,NSP=nrow(PARMS$Parms)){
-	PARMS$Parms[,"m"]=0.02; His=(tail(Finerun(MultiModODE2,rep(c(0.5,0.25),each=NSP),4e2,PARMS),NSP)>0.25)[-PARMS$Cabs];
+	PARMS$Parms[,"m"]=0.025; His=(tail(Finerun(MultiModODE2,rep(c(0.5,0.15),each=NSP),4e2,PARMS),NSP)>0.1)[-PARMS$Cabs];
 	return(sum(His))
 }
 parmgenValidSimp=function(parms0,FMI,NSP=12,Seed=1,triesMax=5e2,extras=c(nCabs=1,Feedvar=0.3,ISvar=0.25,QvarTrans=0.125),outseed=FALSE){
@@ -256,7 +269,7 @@ Trun=200 #Duration of each ODE implementation
 
 gamSeq=seq(0.1,0.85,length=ntests[1]); #Connectance levels to examine
 mSeq=seq(0.025,1.65,length=ntests[2]); #Range and resolution of mortality values to scan
-FvarsDiversity=c(0.01,seq(0.05,0.55,len=ntests[1]-1)); gamDiversity=0.25;  #Diversity levels to examine
+FvarsDiversity=seq(0.025,0.55,len=ntests[1]); gamDiversity=0.25;  #Diversity levels to examine
 removalExptReps=10; befORD=0;  #befORD: 0 identity of removed consumer chosen randomly extinctions, for 1 species removed is the least-abundant consumer
 
 
@@ -327,12 +340,6 @@ matplot((show)-0.1,log(FT[show,]),col=2,pch=1); matpoints((show)+0.1,log(RT[show
 
 #####Figure 5c,d: Plotting example transitions:
 trl=1; xmx=200; par(mfrow=1:2); matplot(storeFMIsave[1:xmx,,trl],type="l",col=rep(3:4,c(12,10))); matplot(storeRMIsave[1:xmx,,trl],type="l",col=rep(3:4,c(12,10)));
-
-
-
-
-
-
 
 
 
