@@ -4,6 +4,7 @@ Food web model of alternative stable states in Karatayev, Baskett, and van Nes m
 In The American Naturalist entitled "The potential for alternative stable states in food webs depends on feedback mechanism and trait diversity"
 
 This code intended for reproducibility only; for model and analysis details see original manuscript.
+
 The script is laid out in 4 sections: (1) Core dynamical models, 
 (2) Functions to generate food webs and evaluate them for feasibility, 
 (3) Functions to simulate food web collapse and recovery, 
