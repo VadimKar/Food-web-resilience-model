@@ -9,6 +9,11 @@ library(deSolve); library(abind);
 
 
 
+
+
+
+
+#################### 1 - Dynamical models
 #Core ODE model.
 MultiModODE2=function(t,start,parms,specials,comps,FMI=TRUE,ListOut=TRUE){
 	#Ensure non-negative inputs
@@ -46,6 +51,72 @@ MultiModODEmech=function(t,start,parms,specials,comps,FMI=TRUE,ListOut=TRUE){
 
 
 
+
+
+
+
+
+
+#################### 2 - Functions setting up food webs
+#generate lognormal RVs
+rlnormT=function(n,mu,sig) rlnorm(n, meanlog=log(mu/sqrt(1+(sig/mu)^2)), sdlog=sqrt(log(1+(sig/mu)^2)) )
+#generate a food web parameterization - a specific set of species traits and interactions
+parmgen=function(parms0,FMI,NSP=12,Seed=1,extras=c(nCabs=1,Feedvar=0.3,ISvar=0.25,QvarTrans=0.125)){
+	Parms=t(matrix(parms0,length(parms0),NSP)); set.seed(Seed); colnames(Parms)=names(parms0);
+	ParmsDevs=parms0["fvar"]*matrix(runif(NSP*length(parms0),-1,1),nrow=NSP)
+	Parms[,parmsvar]=(1+ParmsDevs[,1:length(parmsvar)])%*%diag(parms0[parmsvar])
+	Parms[,"f"]=parms0["f"]*(1+extras["QvarTrans"]*ParmsDevs[,length(parms0)])
+	set.seed(Seed+1); Cabs=sample(1:NSP,extras["nCabs"]); Parms[Cabs,"delta"]=0.05;
+	set.seed(Seed+2); Fs=t(VarWeb(1-extras["Feedvar"],NSP,NSP)); set.seed(Seed+3); 
+	Ss=VarWeb3(NSP,C=Parms[1,"gamma"],precis=0.05); set.seed(Seed+4); Ss=apply((Ss>0)*matrix(rlnormT(NSP^2,1,extras["ISvar"]),NSP,NSP),2,function(x) x/sum(x));
+	return(list(Parms=round(Parms,3),Specials=round(Ss,5),Comps=round(Fs,5),FMI=FMI,Cabs=Cabs))
+}
+#Not all food web parameterizations are viable: at high connectance or diversity, some consumers can go extinct.
+#This almost always happens due to competition that peaks at low mortality levels
+#This function tests whether a parameter set allows consumers to coexist at a low mortality level m=0.025
+parmtest=function(PARMS,NSP=nrow(PARMS$Parms)){
+	PARMS$Parms[,"m"]=0.025; His=(tail(Finerun(MultiModODE2,rep(c(0.5,0.15),each=NSP),4e2,PARMS),NSP)>0.1)[-PARMS$Cabs];
+	return(sum(His))
+}
+#keep generating food web parameterizations until find one where all consumers persist.
+#If we don't find such a parameter set, use food web parameterization that allowed the most consumers to persist.
+parmgenValidSimp=function(parms0,FMI,NSP=12,Seed=1,triesMax=5e2,extras=c(nCabs=1,Feedvar=0.3,ISvar=0.25,QvarTrans=0.125),outseed=FALSE){
+	set.seed(Seed); SeedsGen=rnorm(triesMax,1e6,1e6); tryn=1; nCpres=1[-1]; statisfied=FALSE;
+	while(tryn<=triesMax & !statisfied){
+		NP=tryCatch(parmtest(parmgen(Seed=SeedsGen[tryn],parms0,FMI,NSP,extras)), error=function(e) 0)
+		nCpres=c(nCpres, NP); statisfied=NP==(NSP-extras["nCabs"]); tryn=tryn+1;
+	}; 
+	SeedBest=SeedsGen[tryn-1]; if(tryn>triesMax) SeedBest=SeedsGen[which.max(nCpres)];
+	if(outseed) return(SeedBest); return(parmgen(parms0,FMI,NSP,SeedBest,extras))
+}
+#Generate matrix of recrutiment interactions
+VarWeb=function(Y,k,N=k,smudge=0.025){ #Upper bound on Y is 0.915
+	Yn=pmin(Y,.915); scl=1/pmax(2.6^((0.743-Yn)/0.149)-0.3,1e-3);
+	out=matrix(nrow=0,ncol=k); for(i in 1:1e3){ 
+		if(nrow(out)>N) return(out[1:N,])
+		temp0=matrix(rgamma(k*1e3,scl),ncol=k,byrow=TRUE); temp=temp0/as.vector(temp0%*%rep(1,k));
+		gens=1-apply(temp,1,max); out=rbind(out, temp[which(gens>(Yn-smudge) & gens<(Yn+smudge)),]);
+	}
+}
+#Generate trophic matrix with a given connectance C. Y = elictivity for non-primary resource; not used in analysis.
+VarWeb3=function(nsp,Y=NULL,C=pmin(Y+1/nsp,1),precis=0.025){ #Need either C or Y; Y superseeds.
+	if(C==1/nsp) return(diag(nsp)[sample(1:nsp),]);
+	cmat=matrix(0,nsp,nsp); n=0; while(n<1e5 & (min(c(colSums(cmat),rowSums(cmat)))==0 | abs(mean(cmat)-C)>precis)){ n=n+1; cmat=matrix(rbinom(nsp^2,1,C),nsp,nsp); };
+	return(apply(cmat,2,function(x) x/sum(x)));
+}
+
+
+
+
+
+
+
+
+
+
+
+
+#################### 3 - Functions to run bifurcation analyses
 #Functions to select and implement ODE solver
 Finerun=function(FUN,start,Trun,PARMS,FinAvg=round(Trun/5),NSPi=nrow(PARMS$Parms)){ 
 	Juves=FALSE; if(mean(PARMS$Parms[,"alpha"])>0.05){ Juves=TRUE; FUN=MultiModODEmech; };
@@ -57,9 +128,6 @@ FinerunBEF=function(FUN,start,Trun,PARMS,FinAvg=round(Trun/5)){
 	Conds=apply(rbind(tmp[TimesBEF,],Fin), 1, function(x) MultiModODE2(t=1,start=x,parms=PARMS$Parms,specials=PARMS$Specials,comps=PARMS$Comps,FMI=PARMS$FMI,ListOut=NULL))
 	Conds[1,1:4]=NA; return(c(Fin,Conds[1,],Conds[2,]));
 }
-
-
-#Functions to run bifurcation analyses
 #1 - ramp consumer collapse up & down to detect collapse and recovery points
 #parmVar is bifurcation parameter (m throughout manuscript), parmseq are the levels of parmVar to examine, 
 #and transrun is the simulation length at each parameter level
@@ -114,7 +182,7 @@ gradcollapseBEF=function(FUN,PARMS,parmVar="m",parmseq,transrun=1e3){
 
 
 
-#Functions to analyze and plot simulation results
+#################### 4 - Functions to analyze and plot simulation results
 NAzro=function(x){ x[is.na(x)]=0; return(x); }
 #Measure distinctiveness of states in terms of consumer abundance (divers=FALSE) or species richness (divers=TRUE)
 distinctnss=function(dat,NI=TRUE,Q=0.25,divers=FALSE){
@@ -225,57 +293,8 @@ changeplotDbef2Simp=function(datbef2FMI,datbef2RMI,gamLvl=ntests[1]-1,Qwant=0.3,
 
 
 
-#Functions setting up food webs
-#generate lognormal RVs
-rlnormT=function(n,mu,sig) rlnorm(n, meanlog=log(mu/sqrt(1+(sig/mu)^2)), sdlog=sqrt(log(1+(sig/mu)^2)) )
-#generate a food web parameterization - a specific set of species traits and interactions
-parmgen=function(parms0,FMI,NSP=12,Seed=1,extras=c(nCabs=1,Feedvar=0.3,ISvar=0.25,QvarTrans=0.125)){
-	Parms=t(matrix(parms0,length(parms0),NSP)); set.seed(Seed); colnames(Parms)=names(parms0);
-	ParmsDevs=parms0["fvar"]*matrix(runif(NSP*length(parms0),-1,1),nrow=NSP)
-	Parms[,parmsvar]=(1+ParmsDevs[,1:length(parmsvar)])%*%diag(parms0[parmsvar])
-	Parms[,"f"]=parms0["f"]*(1+extras["QvarTrans"]*ParmsDevs[,length(parms0)])
-	set.seed(Seed+1); Cabs=sample(1:NSP,extras["nCabs"]); Parms[Cabs,"delta"]=0.05;
-	set.seed(Seed+2); Fs=t(VarWeb(1-extras["Feedvar"],NSP,NSP)); set.seed(Seed+3); 
-	Ss=VarWeb3(NSP,C=Parms[1,"gamma"],precis=0.05); set.seed(Seed+4); Ss=apply((Ss>0)*matrix(rlnormT(NSP^2,1,extras["ISvar"]),NSP,NSP),2,function(x) x/sum(x));
-	return(list(Parms=round(Parms,3),Specials=round(Ss,5),Comps=round(Fs,5),FMI=FMI,Cabs=Cabs))
-}
-#Not all food web parameterizations are viable: at high connectance or diversity, some consumers can go extinct.
-#This almost always happens due to competition that peaks at low mortality levels
-#This function tests whether a parameter set allows consumers to coexist at a low mortality level m=0.025
-parmtest=function(PARMS,NSP=nrow(PARMS$Parms)){
-	PARMS$Parms[,"m"]=0.025; His=(tail(Finerun(MultiModODE2,rep(c(0.5,0.15),each=NSP),4e2,PARMS),NSP)>0.1)[-PARMS$Cabs];
-	return(sum(His))
-}
-#keep generating food web parameterizations until find one where all consumers persist.
-#If we don't find such a parameter set, use food web parameterization that allowed the most consumers to persist.
-parmgenValidSimp=function(parms0,FMI,NSP=12,Seed=1,triesMax=5e2,extras=c(nCabs=1,Feedvar=0.3,ISvar=0.25,QvarTrans=0.125),outseed=FALSE){
-	set.seed(Seed); SeedsGen=rnorm(triesMax,1e6,1e6); tryn=1; nCpres=1[-1]; statisfied=FALSE;
-	while(tryn<=triesMax & !statisfied){
-		NP=tryCatch(parmtest(parmgen(Seed=SeedsGen[tryn],parms0,FMI,NSP,extras)), error=function(e) 0)
-		nCpres=c(nCpres, NP); statisfied=NP==(NSP-extras["nCabs"]); tryn=tryn+1;
-	}; 
-	SeedBest=SeedsGen[tryn-1]; if(tryn>triesMax) SeedBest=SeedsGen[which.max(nCpres)];
-	if(outseed) return(SeedBest); return(parmgen(parms0,FMI,NSP,SeedBest,extras))
-}
-#Generate matrix of recrutiment interactions
-VarWeb=function(Y,k,N=k,smudge=0.025){ #Upper bound on Y is 0.915
-	Yn=pmin(Y,.915); scl=1/pmax(2.6^((0.743-Yn)/0.149)-0.3,1e-3);
-	out=matrix(nrow=0,ncol=k); for(i in 1:1e3){ 
-		if(nrow(out)>N) return(out[1:N,])
-		temp0=matrix(rgamma(k*1e3,scl),ncol=k,byrow=TRUE); temp=temp0/as.vector(temp0%*%rep(1,k));
-		gens=1-apply(temp,1,max); out=rbind(out, temp[which(gens>(Yn-smudge) & gens<(Yn+smudge)),]);
-	}
-}
-#Generate trophic matrix with a given connectance C. Y = elictivity for non-primary resource; not used in analysis.
-VarWeb3=function(nsp,Y=NULL,C=pmin(Y+1/nsp,1),precis=0.025){ #Need either C or Y; Y superseeds.
-	if(C==1/nsp) return(diag(nsp)[sample(1:nsp),]);
-	cmat=matrix(0,nsp,nsp); n=0; while(n<1e5 & (min(c(colSums(cmat),rowSums(cmat)))==0 | abs(mean(cmat)-C)>precis)){ n=n+1; cmat=matrix(rbinom(nsp^2,1,C),nsp,nsp); };
-	return(apply(cmat,2,function(x) x/sum(x)));
-}
 
-
-
-#Implement analysis of food web responses to consumer mortality. 
+#################### 5 - Implement analysis of food web responses to consumer mortality. 
 #This function iterates across levels of connectance or diversity and across replicate food webs.
 runBif=function(name,Torun,Reps=1:120,triesMax=200){
 	model=floor(Torun["mType"]); traitDiversity=model==2; stageStructured=model==3; removalExpt=model==4;
@@ -395,6 +414,7 @@ matplot((show)-0.1,log(FT[show,]),col=2,pch=1); matpoints((show)+0.1,log(RT[show
 
 #####Figure 5c,d: Plotting example transitions:
 trl=1; xmx=200; par(mfrow=1:2); matplot(storeFMIsave[1:xmx,,trl],type="l",col=rep(3:4,c(12,10))); matplot(storeRMIsave[1:xmx,,trl],type="l",col=rep(3:4,c(12,10)));
+
 
 
 
